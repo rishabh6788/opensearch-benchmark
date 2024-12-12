@@ -32,6 +32,7 @@ import logging
 import math
 import multiprocessing
 import queue
+import sys
 import threading
 from dataclasses import dataclass
 from typing import Callable
@@ -606,6 +607,7 @@ class WorkerCoordinator:
     def prepare_benchmark(self, t):
         self.workload = t
         self.test_procedure = select_test_procedure(self.config, self.workload)
+        #print(f"The test prcedure schedule is {self.test_procedure.schedule}")
         self.quiet = self.config.opts("system", "quiet.mode", mandatory=False, default_value=False)
         downsample_factor = int(self.config.opts(
             "results_publishing", "metrics.request.downsample.factor",
@@ -657,12 +659,13 @@ class WorkerCoordinator:
         self.logger.info("Attaching cluster-level telemetry devices.")
         self.telemetry.on_benchmark_start()
         self.logger.info("Cluster-level telemetry devices are now attached.")
-
         allocator = Allocator(self.test_procedure.schedule)
         self.allocations = allocator.allocations
-        self.number_of_steps = len(allocator.join_points) - 1
+        print(f"Allocations are {self.allocations}")
+        #print(f"Total join points are: {allocator.join_points}")
+        self.number_of_steps = len(allocator.join_points) - 1 ## 1
         self.tasks_per_join_point = allocator.tasks_per_joinpoint
-
+        #print(f"tasks per joinpoint: {self.tasks_per_join_point}")
         self.logger.info("Benchmark consists of [%d] steps executed by [%d] clients.",
                          self.number_of_steps, len(self.allocations))
         # avoid flooding the log if there are too many clients
@@ -672,9 +675,10 @@ class WorkerCoordinator:
         worker_assignments = calculate_worker_assignments(self.load_worker_coordinator_hosts, allocator.clients)
         worker_id = 0
         for assignment in worker_assignments:
-            host = assignment["host"]
-            for clients in assignment["workers"]:
+            host = assignment["host"] #localhost
+            for clients in assignment["workers"]: # cpu cores [0] [1] [2] [3]
                 # don't assign workers without any clients
+                #print(f"Clients are {clients}")
                 if len(clients) > 0:
                     self.logger.info("Allocating worker [%d] on [%s] with [%d] clients.", worker_id, host, len(clients))
                     worker = self.target.create_client(host)
@@ -685,6 +689,7 @@ class WorkerCoordinator:
                         self.clients_per_worker[client_id] = worker_id
                     self.target.start_worker(worker, worker_id, self.config, self.workload, client_allocations)
                     self.workers.append(worker)
+                    #print(f"Workers are {self.workers}")
                     worker_id += 1
 
         self.update_progress_message()
@@ -978,8 +983,10 @@ def calculate_worker_assignments(host_configs, client_count):
     """
     assignments = []
     client_idx = 0
+    print(f"The host config is {host_configs}")
     host_count = len(host_configs)
     clients_per_host = math.ceil(client_count / host_count)
+    print(f"Clients per host is {clients_per_host}")
     remaining_clients = client_count
     for host_config in host_configs:
         # the last host might not need to simulate as many clients as the rest of the hosts as we eagerly
@@ -1009,7 +1016,7 @@ def calculate_worker_assignments(host_configs, client_count):
         remaining_clients -= clients_on_this_host
 
     assert remaining_clients == 0
-
+    print(f"Assignments is {assignments}")
     return assignments
 
 
@@ -1025,6 +1032,7 @@ class ClientAllocations:
             "client_id": client_id,
             "tasks": tasks
         })
+        print(f"client_allocations: {self.allocations}")
 
     def is_joinpoint(self, task_index):
         return all(isinstance(t.task, JoinPoint) for t in self.tasks(task_index))
@@ -1032,6 +1040,7 @@ class ClientAllocations:
     def tasks(self, task_index, remove_empty=True):
         current_tasks = []
         for allocation in self.allocations:
+            #print(f"ALLOCATIONS IS {allocation}")
             tasks_at_index = allocation["tasks"][task_index]
             if remove_empty and tasks_at_index is not None:
                 current_tasks.append(ClientAllocation(allocation["client_id"], tasks_at_index))
@@ -1072,6 +1081,7 @@ class Worker(actor.BenchmarkActor):
     @actor.no_retry("worker")  # pylint: disable=no-value-for-parameter
     def receiveMsg_StartWorker(self, msg, sender):
         self.logger.info("Worker[%d] is about to start.", msg.worker_id)
+        print(f"Worker{msg.worker_id} is about to start.")
         self.master = sender
         self.worker_id = msg.worker_id
         self.config = load_local_config(msg.config)
@@ -1095,6 +1105,7 @@ class Worker(actor.BenchmarkActor):
         sleep_time = datetime.timedelta(seconds=msg.client_start_timestamp - time.perf_counter())
         self.logger.info("Worker[%d] is continuing its work at task index [%d] on [%f], that is in [%s].",
                          self.worker_id, self.current_task_index, msg.client_start_timestamp, sleep_time)
+        print(f"Worker{self.worker_id} is continuing its work at task index {self.current_task_index} on {msg.client_start_timestamp}, that is in {sleep_time}.")
         self.start_driving = True
         self.wakeupAfter(sleep_time)
 
@@ -1201,7 +1212,7 @@ class Worker(actor.BenchmarkActor):
         self.current_task_index = self.next_task_index
         current = self.client_allocations.tasks(self.current_task_index)
         self.next_task_index += 1
-        self.logger.debug("Worker[%d] is at task index [%d].", self.worker_id, self.current_task_index)
+        self.logger.info("Worker[%d] is at task index [%d].", self.worker_id, self.current_task_index)
         return current
 
     def send_samples(self):
@@ -1522,7 +1533,7 @@ class AsyncIoAdapter:
             #
             # Now we need to ensure that we start partitioning parameters correctly in both cases. And that means we
             # need to start from (client) index 0 in both cases instead of 0 for indexA and 4 for indexB.
-            schedule = schedule_for(task, task_allocation.client_index_in_task, params_per_task[task])
+            schedule = schedule_for(task_allocation, params_per_task[task])
             async_executor = AsyncExecutor(
                 client_id, task, schedule, opensearch, self.sampler, self.cancel, self.complete,
                 task.error_behavior(self.abort_on_error), self.cfg)
@@ -1607,6 +1618,11 @@ class AsyncExecutor:
         # lazily initialize the schedule
         self.logger.debug("Initializing schedule for client id [%s].", self.client_id)
         schedule = self.schedule_handle()
+        self.schedule_handle.start()
+        rampup_wait_time = self.schedule_handle.ramp_up_wait_time
+        if rampup_wait_time:
+            self.logger.info("client id [%s] waiting [%.2f]s for ramp-up.", self.client_id, rampup_wait_time)
+            await asyncio.sleep(rampup_wait_time)
         self.logger.debug("Entering main loop for client id [%s].", self.client_id)
         # noinspection PyBroadException
         try:
@@ -1806,18 +1822,21 @@ class JoinPoint:
 
 
 class TaskAllocation:
-    def __init__(self, task, client_index_in_task):
+    def __init__(self, task, client_index_in_task, global_client_index, total_clients):
         self.task = task
         self.client_index_in_task = client_index_in_task
+        self.global_client_index = global_client_index
+        self.total_clients = total_clients
 
     def __hash__(self):
-        return hash(self.task) ^ hash(self.client_index_in_task)
+        return hash(self.task) ^ hash(self.global_client_index)
 
     def __eq__(self, other):
-        return isinstance(other, type(self)) and self.task == other.task and self.client_index_in_task == other.client_index_in_task
+        return isinstance(other, type(self)) and self.task == other.task and self.global_client_index == other.global_client_index
 
     def __repr__(self, *args, **kwargs):
-        return "TaskAllocation [%d/%d] for %s" % (self.client_index_in_task, self.task.clients, self.task)
+        return f"TaskAllocation [{self.client_index_in_task}/{self.task.clients}] for {self.task} " \
+               f"and [{self.global_client_index}/{self.total_clients}] in total"
 
 
 class Allocator:
@@ -1843,28 +1862,43 @@ class Allocator:
         :return: An allocation matrix with the structure described above.
         """
         max_clients = self.clients
+        #print(f"MAX CLIENTS: {max_clients}")
         allocations = [None] * max_clients
         for client_index in range(max_clients):
             allocations[client_index] = []
+        #print(f"allocations: {allocations}")
         join_point_id = 0
         # start with an artificial join point to allow master to coordinate that all clients start at the same time
         next_join_point = JoinPoint(join_point_id)
         for client_index in range(max_clients):
             allocations[client_index].append(next_join_point)
         join_point_id += 1
+        #print(f"allocations-1: {allocations}")
 
         for task in self.schedule:
             start_client_index = 0
             clients_executing_completing_task = []
             for sub_task in task:
+                #print(f"Sub task is {sub_task}")
                 for client_index in range(start_client_index, start_client_index + sub_task.clients):
                     # this is the actual client that will execute the task. It may differ from the logical one in case we over-commit (i.e.
                     # more tasks than actually available clients)
                     physical_client_index = client_index % max_clients
+                    #print(f"Physical Client Index: {physical_client_index}")
+                    #print(f"Completes Parent: {sub_task.completes_parent}")
                     if sub_task.completes_parent:
                         clients_executing_completing_task.append(physical_client_index)
-                    allocations[physical_client_index].append(TaskAllocation(sub_task, client_index - start_client_index))
+                    ta = TaskAllocation(task=sub_task,
+                                        client_index_in_task=client_index - start_client_index,
+                                        global_client_index=client_index,
+                                        # if task represents a parallel structure this is the total number of clients
+                                        # executing sub-tasks concurrently.
+                                        total_clients=task.clients)
+                    
+                    allocations[physical_client_index].append(ta)
+                #print(f"allocations-2: {allocations}")
                 start_client_index += sub_task.clients
+                #print(f"start client index: {start_client_index}")
 
             # uneven distribution between tasks and clients, e.g. there are 5 (parallel) tasks but only 2 clients. Then, one of them
             # executes three tasks, the other one only two. So we need to fill in a `None` for the second one.
@@ -1875,10 +1909,12 @@ class Allocator:
                     allocations[client_index].append(None)
 
             # let all clients join after each task, then we go on
+            #print(f"Join point id {join_point_id}, clients_executing_completing_task: {clients_executing_completing_task}")
             next_join_point = JoinPoint(join_point_id, clients_executing_completing_task)
             for client_index in range(max_clients):
                 allocations[client_index].append(next_join_point)
             join_point_id += 1
+        #print(f"allocations-3: {allocations}")
         return allocations
 
     @property
@@ -1918,7 +1954,6 @@ class Allocator:
                 elif isinstance(allocation, JoinPoint) and len(current_tasks) > 0:
                     tasks.append(current_tasks)
                     current_tasks = set()
-
         return tasks
 
     @property
@@ -1941,7 +1976,7 @@ class Allocator:
 
 # Runs a concrete schedule on one worker client
 # Needs to determine the runners and concrete iterations per client.
-def schedule_for(task, client_index, parameter_source):
+def schedule_for(task_allocation, parameter_source):
     """
     Calculates a client's schedule for a given task.
 
@@ -1951,15 +1986,17 @@ def schedule_for(task, client_index, parameter_source):
     :return: A generator for the operations the given client needs to perform for this task.
     """
     logger = logging.getLogger(__name__)
+    task = task_allocation.task
     op = task.operation
-    num_clients = task.clients
     sched = scheduler.scheduler_for(task)
+
+    client_index = task_allocation.client_index_in_task
     # guard all logging statements with the client index and only emit them for the first client. This information is
     # repetitive and may cause issues in thespian with many clients (an excessive number of actor messages is sent).
     if client_index == 0:
         logger.info("Choosing [%s] for [%s].", sched, task)
     runner_for_op = runner.runner_for(op.type)
-    params_for_op = parameter_source.partition(client_index, num_clients)
+    params_for_op = parameter_source.partition(client_index, task.clients)
     if hasattr(sched, "parameter_source"):
         if client_index == 0:
             logger.debug("Setting parameter source [%s] for scheduler [%s]", params_for_op, sched)
@@ -1992,7 +2029,7 @@ def schedule_for(task, client_index, parameter_source):
         else:
             logger.info("%s schedule will determine when the schedule for [%s] terminates.", str(loop_control), task.name)
 
-    return ScheduleHandle(task.name, sched, loop_control, runner_for_op, params_for_op)
+    return ScheduleHandle(task_allocation, sched, loop_control, runner_for_op, params_for_op)
 
 
 def requires_time_period_schedule(task, task_runner, params):
@@ -2009,7 +2046,7 @@ def requires_time_period_schedule(task, task_runner, params):
 
 
 class ScheduleHandle:
-    def __init__(self, task_name, sched, task_progress_control, runner, params):
+    def __init__(self, task_allocation, sched, task_progress_control, runner, params):
         """
         Creates a generator that will yield individual task invocations for the provided schedule.
 
@@ -2020,7 +2057,7 @@ class ScheduleHandle:
         :param params: The parameter source for a given operation.
         :return: A generator for the corresponding parameters.
         """
-        self.task_name = task_name
+        self.task_allocation = task_allocation
         self.sched = sched
         self.task_progress_control = task_progress_control
         self.runner = runner
@@ -2030,6 +2067,20 @@ class ScheduleHandle:
         #import asyncio
         #self.io_pool_exc = ThreadPoolExecutor(max_workers=1)
         #self.loop = asyncio.get_event_loop()
+    
+    @property
+    def ramp_up_wait_time(self):
+        """
+        :return: the number of seconds to wait until this client should start so load can gradually ramp-up.
+        """
+        ramp_up_time_period = self.task_allocation.task.ramp_up_time_period
+        if ramp_up_time_period:
+            return ramp_up_time_period * (self.task_allocation.global_client_index / self.task_allocation.total_clients)
+        else:
+            return 0
+    
+    def start(self):
+        self.task_progress_control.start()
 
     def before_request(self, now):
         self.sched.before_request(now)
@@ -2041,7 +2092,6 @@ class ScheduleHandle:
         next_scheduled = 0
         if self.task_progress_control.infinite:
             param_source_knows_progress = hasattr(self.params, "percent_completed")
-            self.task_progress_control.start()
             while True:
                 try:
                     next_scheduled = self.sched.next(next_scheduled)
@@ -2054,7 +2104,6 @@ class ScheduleHandle:
                 except StopIteration:
                     return
         else:
-            self.task_progress_control.start()
             while not self.task_progress_control.completed:
                 try:
                     next_scheduled = self.sched.next(next_scheduled)
