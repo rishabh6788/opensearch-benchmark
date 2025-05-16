@@ -294,8 +294,8 @@ class FeedbackActor(actor.BenchmarkActor):
         self.percentage_clients_to_scale_down = msg.scale_down_pct
         self.POST_SCALEDOWN_SECONDS = msg.sleep_seconds
         self.logger.info(
-        "Feedback actor has received the following configuration: Max clients = %s, scale step = %d, scale down percentage = %f, sleep time = %d",
-        self.total_client_count, self.num_clients_to_scale_up, self.percentage_clients_to_scale_down, self.POST_SCALEDOWN_SECONDS
+            "Feedback actor has received the following configuration: Max clients = %s, scale step = %d, scale down percentage = %f, sleep time = %d",
+            self.total_client_count, self.num_clients_to_scale_up, self.percentage_clients_to_scale_down, self.POST_SCALEDOWN_SECONDS
         )
 
     def receiveMsg_ActorExitRequest(self, msg, sender):
@@ -345,7 +345,6 @@ class FeedbackActor(actor.BenchmarkActor):
         if self.state == FeedbackState.SLEEP:
             if current_time - self.sleep_start_time >= self.POST_SCALEDOWN_SECONDS:
                 self.logger.info("Sleep period complete, returning to NEUTRAL state")
-                #self.clear_queue()
                 self.state = FeedbackState.NEUTRAL
                 self.sleep_start_time = current_time
             return
@@ -361,7 +360,7 @@ class FeedbackActor(actor.BenchmarkActor):
         if self.state == FeedbackState.NEUTRAL:
             self.max_stable_clients = max(self.max_stable_clients, self.total_active_client_count) # update the max number of stable clients
             if (current_time - self.last_error_time >= self.POST_SCALEDOWN_SECONDS and
-                current_time - self.last_scaleup_time >= self.WAKEUP_INTERVAL):
+                    current_time - self.last_scaleup_time >= self.WAKEUP_INTERVAL):
                 self.logger.info("No errors in the last %d seconds, scaling up", self.POST_SCALEDOWN_SECONDS)
                 self.state = FeedbackState.SCALING_UP
             return
@@ -555,8 +554,8 @@ class WorkerCoordinatorActor(actor.BenchmarkActor):
                 shared_states=shared_states,
                 error_queue=self.coordinator.error_queue,
                 queue_lock=self.coordinator.queue_lock
-                )
             )
+        )
 
     def drive_at(self, worker_coordinator, client_start_timestamp):
         self.send(worker_coordinator, Drive(client_start_timestamp))
@@ -728,7 +727,7 @@ class WorkloadPreparationActor(actor.BenchmarkActor):
         # update to ensure we use the latest version of plugins.
         load_workload(self.cfg)
         load_workload_plugins(self.cfg, self.workload.name, register_workload_processor=tpr.register_workload_processor,
-                           force_update=True)
+                              force_update=True)
         # we expect on_prepare_workload can take a long time. seed a queue of tasks and delegate to child workers
         self.children = [self._create_task_executor() for _ in range(num_cores(self.cfg))]
         for processor in tpr.processors:
@@ -770,7 +769,7 @@ class WorkloadPreparationActor(actor.BenchmarkActor):
 
 def num_cores(cfg):
     return int(cfg.opts("system", "available.cores", mandatory=False,
-                         default_value=multiprocessing.cpu_count()))
+                        default_value=multiprocessing.cpu_count()))
 
 
 class WorkerCoordinator:
@@ -941,13 +940,12 @@ class WorkerCoordinator:
                         subtask.params["target-throughput"] = max_clients
                         subtask.params["clients"] = max_clients
         elif load_test_clients:
-            self.logger.info("Load test mode enabled - set max client count to %d", load_test_clients)
             for task in self.test_procedure.schedule:
                 for subtask in task:
                     subtask.params["clients"] = load_test_clients
                     subtask.params["target-throughput"] = load_test_clients
             self.logger.info("Load test mode enabled - set max client count to %d", load_test_clients)
-
+        print(self.test_procedure.schedule)
         allocator = Allocator(self.test_procedure.schedule)
         self.allocations = allocator.allocations
         self.number_of_steps = len(allocator.join_points) - 1
@@ -992,10 +990,10 @@ class WorkerCoordinator:
             scale_down_pct = self.config.opts("workload", "redline.scale_down_pct", default_value=0.10)
             sleep_seconds = self.config.opts("workload", "redline.sleep_seconds", default_value=30)
             self.target.send(self.target.feedback_actor, ConfigureFeedbackScaling(
-            scale_step=scale_step,
-            scale_down_pct=scale_down_pct,
-            sleep_seconds=sleep_seconds,
-            max_clients=max_clients
+                scale_step=scale_step,
+                scale_down_pct=scale_down_pct,
+                sleep_seconds=sleep_seconds,
+                max_clients=max_clients
             ))
             self.target.start_feedbackActor(self.shared_client_dict)
 
@@ -1453,12 +1451,12 @@ class Worker(actor.BenchmarkActor):
                 if e:
                     currentTasks = self.client_allocations.tasks(self.current_task_index)
                     detailed_error = (
-                    f"Benchmark operation failed:\n"
-                    f"Worker ID: {self.worker_id}\n"
-                    f"Task: {', '.join(t.task.task.name for t in currentTasks)}\n"
-                    f"Workload: {self.workload.name if self.workload else 'Unknown'}\n"
-                    f"Test Procedure: {self.workload.selected_test_procedure_or_default}\n"
-                    f"Cause: {e.cause if hasattr(e, 'cause') and e.cause is not None else 'Unknown'}"
+                        f"Benchmark operation failed:\n"
+                        f"Worker ID: {self.worker_id}\n"
+                        f"Task: {', '.join(t.task.task.name for t in currentTasks)}\n"
+                        f"Workload: {self.workload.name if self.workload else 'Unknown'}\n"
+                        f"Test Procedure: {self.workload.selected_test_procedure_or_default}\n"
+                        f"Cause: {e.cause if hasattr(e, 'cause') and e.cause is not None else 'Unknown'}"
                     )
                     detailed_error += f"\nError: {str(e)}"
 
@@ -1851,7 +1849,7 @@ class AsyncIoAdapter:
         # to override it if needed.
         client_count = len(self.task_allocations)
         opensearch = os_clients(self.cfg.opts("client", "hosts").all_hosts,
-                        self.cfg.opts("client", "options").with_max_connections(client_count))
+                                self.cfg.opts("client", "options").with_max_connections(client_count))
 
         self.logger.info("Task assertions enabled: %s", str(self.assertions_enabled))
         runner.enable_assertions(self.assertions_enabled)
@@ -1982,11 +1980,13 @@ class AsyncExecutor:
                 if self.cancel.is_set():
                     self.logger.info("User cancelled execution.")
                     break
+
                 # redline testing: check whether this client should be running
                 # if redline testing is not enabled, there won't be a dictionary shared to this client,
                 # so we evaluate to a truthy value by default, allowing it to run normally in a regular benchmark
                 client_state = (self.shared_states or {}).get(self.client_id, True)
                 if client_state and was_paused:
+                    # print(f"Client {self.client_id} is now running")
                     now = time.perf_counter()
                     total_start = now - expected_scheduled_time
                     was_paused = False
@@ -2024,13 +2024,12 @@ class AsyncExecutor:
                     # if num_clients > cpu_count().
                     if params is not None and params.get("operation-type") == "vector-search":
                         available_cores = int(self.cfg.opts("system", "available.cores", mandatory=False,
-                            default_value=multiprocessing.cpu_count()))
+                                                            default_value=multiprocessing.cpu_count()))
                         params.update({"num_clients": self.task.clients, "num_cores": available_cores})
 
                 # Execute with the appropriate context manager
                 async with context_manager as request_context:
                     total_ops, total_ops_unit, request_meta_data = await execute_single(runner, self.opensearch, params, self.on_error, self.redline_enabled)
-                    print(f"Clint ID {self.client_id} is sending request")
                     request_start = request_context.request_start
                     request_end = request_context.request_end
                     client_request_start = request_context.client_request_start
@@ -2084,9 +2083,9 @@ class AsyncExecutor:
 
                 if client_state:
                     self.sampler.add(self.task, self.client_id, sample_type, request_meta_data,
-                                    absolute_processing_start, request_start,
-                                    latency, service_time, client_processing_time, processing_time, throughput, total_ops, total_ops_unit,
-                                    time_period, progress, request_meta_data.pop("dependent_timing", None))
+                                     absolute_processing_start, request_start,
+                                     latency, service_time, client_processing_time, processing_time, throughput, total_ops, total_ops_unit,
+                                     time_period, progress, request_meta_data.pop("dependent_timing", None))
 
                 if completed:
                     self.logger.info("Task [%s] is considered completed due to external event.", self.task)
