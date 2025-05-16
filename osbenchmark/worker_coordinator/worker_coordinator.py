@@ -939,12 +939,12 @@ class WorkerCoordinator:
                 for task in self.test_procedure.schedule:
                     for subtask in task:
                         subtask.params["target-throughput"] = max_clients
-                        subtask.clients = max_clients
+                        subtask.params["clients"] = max_clients
         elif load_test_clients:
             self.logger.info("Load test mode enabled - set max client count to %d", load_test_clients)
             for task in self.test_procedure.schedule:
                 for subtask in task:
-                    subtask.clients = load_test_clients
+                    subtask.params["clients"] = load_test_clients
                     subtask.params["target-throughput"] = load_test_clients
             self.logger.info("Load test mode enabled - set max client count to %d", load_test_clients)
 
@@ -1982,7 +1982,6 @@ class AsyncExecutor:
                 if self.cancel.is_set():
                     self.logger.info("User cancelled execution.")
                     break
-
                 # redline testing: check whether this client should be running
                 # if redline testing is not enabled, there won't be a dictionary shared to this client,
                 # so we evaluate to a truthy value by default, allowing it to run normally in a regular benchmark
