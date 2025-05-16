@@ -238,7 +238,7 @@ class StartFeedbackActor:
 # pylint: disable=too-many-public-methods
 class FeedbackActor(actor.BenchmarkActor):
     POST_SCALEDOWN_SECONDS = 30
-    WAKEUP_INTERVAL = 1
+    WAKEUP_INTERVAL = 3
 
     def __init__(self) -> None:
         super().__init__()
@@ -257,6 +257,7 @@ class FeedbackActor(actor.BenchmarkActor):
         # These will be passed in via StartFeedbackActor:
         self.error_queue = None
         self.queue_lock = None
+        self.max_error_threshold = 10000
 
     def receiveMsg_StartFeedbackActor(self, msg, sender) -> None:
         """
@@ -285,7 +286,7 @@ class FeedbackActor(actor.BenchmarkActor):
         self.state = FeedbackState.DISABLED
         temp_percentage = self.percentage_clients_to_scale_down # store scale down value so it doesn't stay at 100% after doing this
         self.percentage_clients_to_scale_down = 1.0
-        self.scale_down()
+        #self.scale_down()
         self.percentage_clients_to_scale_down = temp_percentage
 
     def receiveMsg_ConfigureFeedbackScaling(self, msg, sender):
@@ -298,10 +299,15 @@ class FeedbackActor(actor.BenchmarkActor):
         )
 
     def receiveMsg_ActorExitRequest(self, msg, sender):
-        print("Redline test finished. Maximum stable client number reached: %d" % self.max_stable_clients)
+        print("Redline test finished. Maximum stable client number reached: %d" % self.total_active_client_count)
         self.logger.info("FeedbackActor received ActorExitRequest and will shutdown")
         if hasattr(self, 'shared_client_states'):
             self.shared_client_states.clear()
+
+    def receiveMsg_ResetErrorThreshold(self, msg, sender):
+        """Reset the max error threshold to allow scaling up again."""
+        self.max_error_threshold = float('inf')
+        self.logger.info("Error threshold has been reset, allowing full scale-up")
 
     def check_for_errors(self) -> List[Dict[str, Any]]:
         """Poll the error queue for errors."""
@@ -339,32 +345,38 @@ class FeedbackActor(actor.BenchmarkActor):
         if self.state == FeedbackState.SLEEP:
             if current_time - self.sleep_start_time >= self.POST_SCALEDOWN_SECONDS:
                 self.logger.info("Sleep period complete, returning to NEUTRAL state")
-                self.clear_queue()
+                #self.clear_queue()
                 self.state = FeedbackState.NEUTRAL
                 self.sleep_start_time = current_time
-        elif errors:
+            return
+        if errors:
             self.logger.info("Error messages detected, scaling down...")
             self.state = FeedbackState.SCALING_DOWN
             with self.queue_lock:  # Block producers while scaling down.
                 self.scale_down()
             self.logger.info("Clients scaled down. Active clients: %d", self.total_active_client_count)
             self.last_error_time = current_time
-        elif self.state == FeedbackState.NEUTRAL:
+            return
+
+        if self.state == FeedbackState.NEUTRAL:
             self.max_stable_clients = max(self.max_stable_clients, self.total_active_client_count) # update the max number of stable clients
             if (current_time - self.last_error_time >= self.POST_SCALEDOWN_SECONDS and
                 current_time - self.last_scaleup_time >= self.WAKEUP_INTERVAL):
                 self.logger.info("No errors in the last %d seconds, scaling up", self.POST_SCALEDOWN_SECONDS)
                 self.state = FeedbackState.SCALING_UP
+            return
 
         if self.state == FeedbackState.SCALING_UP:
             self.logger.info("Scaling up...")
             self.scale_up()
             self.logger.info("Clients scaled up. Active clients: %d", self.total_active_client_count)
             self.state = FeedbackState.NEUTRAL
+            return
 
     def scale_down(self) -> None:
         try:
-            clients_to_pause = int(self.total_active_client_count * self.percentage_clients_to_scale_down)
+            self.max_error_threshold = self.total_active_client_count
+            clients_to_pause = math.ceil(self.total_active_client_count * self.percentage_clients_to_scale_down)
             if clients_to_pause <= 0:
                 self.logger.info("No clients to pause during scale down")
                 return
@@ -396,6 +408,17 @@ class FeedbackActor(actor.BenchmarkActor):
 
     def scale_up(self) -> None:
         try:
+            max_clients_to_add = min(
+                self.num_clients_to_scale_up,
+                max(0, self.max_error_threshold - self.total_active_client_count - 1)  # -1 for safety margin
+            )
+
+            if max_clients_to_add <= 0:
+                self.logger.info(
+                    "Not scaling up: Current count %d is at or near previous error threshold %d",
+                    self.total_active_client_count, self.max_error_threshold
+                )
+                return
             clients_activated = 0
             inactive_clients = [
                 (worker_id, client_id)
@@ -407,14 +430,14 @@ class FeedbackActor(actor.BenchmarkActor):
             random.shuffle(inactive_clients)
 
             for worker_id, client_id in inactive_clients:
-                if clients_activated >= self.num_clients_to_scale_up:
+                if clients_activated >= max_clients_to_add:
                     break
                 self.shared_client_states[worker_id][client_id] = True
                 self.total_active_client_count += 1
                 clients_activated += 1
                 self.logger.info("Unpaused client %d on worker %d", client_id, worker_id)
 
-            if clients_activated < self.num_clients_to_scale_up:
+            if clients_activated < max_clients_to_add:
                 self.logger.info("Not enough inactive clients to activate. Activated %d clients", clients_activated)
 
         finally:
@@ -2008,6 +2031,7 @@ class AsyncExecutor:
                 # Execute with the appropriate context manager
                 async with context_manager as request_context:
                     total_ops, total_ops_unit, request_meta_data = await execute_single(runner, self.opensearch, params, self.on_error, self.redline_enabled)
+                    print(f"Clint ID {self.client_id} is sending request")
                     request_start = request_context.request_start
                     request_end = request_context.request_end
                     client_request_start = request_context.client_request_start
