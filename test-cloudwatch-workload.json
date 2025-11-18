@@ -1,0 +1,29 @@
+{
+  "description": "CloudWatch Logs benchmark workload",
+  "version": 2,
+  "operations": [
+    {
+      "name": "query-recent-errors",
+      "operation-type": "cloudwatch-logs-query",
+      "log-group-name": "Jenkins/vpc/flow-logs",
+      "query-string": "fields @timestamp, @message, @logStream, @log |sort @timestamp desc | limit 10000",
+      "start-time": "-1h",
+      "end-time": "now",
+      "region": "us-east-1"
+    }
+  ],
+  "test_procedures": [
+    {
+      "name": "error-analysis",
+      "description": "Analyze error patterns in CloudWatch Logs",
+      "default": true,
+      "schedule": [
+        {
+          "operation": "query-recent-errors",
+          "clients": 1,
+          "iterations": 1
+        }
+      ]
+    }
+  ]
+}

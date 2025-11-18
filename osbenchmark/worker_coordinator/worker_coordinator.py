@@ -47,6 +47,7 @@ import thespian.actors
 
 from osbenchmark import actor, config, exceptions, metrics, workload, client, paths, PROGRAM_NAME, telemetry
 from osbenchmark.worker_coordinator import runner, scheduler
+from osbenchmark.worker_coordinator.cloudwatch_executor import CloudWatchIoAdapter
 from osbenchmark.workload import WorkloadProcessorRegistry, load_workload, load_workload_plugins, ingestion_manager
 from osbenchmark.utils import convert, console, net
 from osbenchmark.worker_coordinator.errors import parse_error
@@ -2160,11 +2161,39 @@ class AsyncIoAdapter:
         aws = []
         # A parameter source should only be created once per task - it is partitioned later on per client.
         params_per_task = {}
+        cloudwatch_tasks = []
+        opensearch_tasks = []
+        
+        # Separate CloudWatch and OpenSearch tasks
         for client_id, task_allocation in self.task_allocations:
             task = task_allocation.task
+            op_type = task.operation.type
+            # Convert enum to string for comparison
+            if hasattr(op_type, 'to_hyphenated_string'):
+                op_type_str = op_type.to_hyphenated_string()
+            else:
+                op_type_str = str(op_type)
+                
+            if op_type_str in ["cloud-watch-logs-query", "cloud-watch-logs-start-query", "cloud-watch-logs-get-results"]:
+                cloudwatch_tasks.append((client_id, task_allocation))
+            else:
+                opensearch_tasks.append((client_id, task_allocation))
+                
             if task not in params_per_task:
                 param_source = workload.operation_parameters(self.workload, task)
                 params_per_task[task] = param_source
+
+        # Handle CloudWatch tasks with simplified executor
+        if cloudwatch_tasks:
+            cloudwatch_executor = CloudWatchIoAdapter(
+                self.cfg, self.workload, cloudwatch_tasks, self.sampler, 
+                self.cancel, self.complete, self.abort_on_error
+            )
+            aws.append(asyncio.create_task(cloudwatch_executor.run()))
+        
+        # Handle OpenSearch tasks with standard executor
+        for client_id, task_allocation in opensearch_tasks:
+            task = task_allocation.task
             # We cannot use the global client index here because we need to support parallel execution of tasks
             # with multiple clients. Consider the following scenario:
             #

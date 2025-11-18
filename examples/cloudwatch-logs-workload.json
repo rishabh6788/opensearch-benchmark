@@ -1,0 +1,126 @@
+{
+  "description": "Example workload for CloudWatch Logs query operations with multiple query languages",
+  "version": 2,
+  "operations": [
+    {
+      "name": "query-recent-logs-cwli",
+      "operation-type": "cloudwatch-logs-query",
+      "log-group-name": "/aws/opensearch/my-domain",
+      "query-string": "fields @timestamp, @message | sort @timestamp desc | limit 20",
+      "query-language": "CWLI",
+      "start-time": "-1h",
+      "end-time": "now",
+      "region": "us-east-1"
+    },
+    {
+      "name": "query-error-logs-cwli",
+      "operation-type": "cloudwatch-logs-query",
+      "log-group-name": "/aws/opensearch/my-domain",
+      "query-string": "fields @timestamp, @message | filter @message like /ERROR/ | stats count() by bin(5m)",
+      "query-language": "CWLI",
+      "start-time": "-24h",
+      "end-time": "now",
+      "region": "us-east-1",
+      "poll-interval": 3,
+      "query-timeout": 600
+    },
+    {
+      "name": "query-with-sql",
+      "operation-type": "cloudwatch-logs-query",
+      "log-group-name": "/aws/opensearch/my-domain",
+      "query-string": "SELECT @timestamp, @message FROM '/aws/opensearch/my-domain' WHERE @message LIKE '%ERROR%' ORDER BY @timestamp DESC LIMIT 50",
+      "query-language": "SQL",
+      "start-time": "-2h",
+      "end-time": "now",
+      "region": "us-east-1"
+    },
+    {
+      "name": "query-with-ppl",
+      "operation-type": "cloudwatch-logs-query",
+      "log-group-name": "/aws/opensearch/my-domain",
+      "query-string": "source='/aws/opensearch/my-domain' | where @message like '%ERROR%' | stats count() by span(@timestamp, 5m) | sort @timestamp",
+      "query-language": "PPL",
+      "start-time": "-1h",
+      "end-time": "now",
+      "region": "us-east-1"
+    },
+    {
+      "name": "query-multiple-log-groups",
+      "operation-type": "cloudwatch-logs-query",
+      "log-group-names": [
+        "/aws/opensearch/domain-1",
+        "/aws/opensearch/domain-2"
+      ],
+      "query-string": "fields @timestamp, @message | limit 100",
+      "start-time": "-30m",
+      "end-time": "now",
+      "region": "us-west-2"
+    },
+    {
+      "name": "start-query-async-cwli",
+      "operation-type": "cloudwatch-logs-start-query",
+      "log-group-name": "/aws/lambda/my-function",
+      "query-string": "fields @timestamp, @message | stats count() by @message",
+      "query-language": "CWLI",
+      "start-time": "-2h",
+      "end-time": "now",
+      "region": "us-east-1",
+      "context-key": "my-query"
+    },
+    {
+      "name": "start-query-async-sql",
+      "operation-type": "cloudwatch-logs-start-query",
+      "log-group-name": "/aws/lambda/my-function",
+      "query-string": "SELECT @timestamp, COUNT(*) as count FROM '/aws/lambda/my-function' GROUP BY @message",
+      "query-language": "SQL",
+      "start-time": "-2h",
+      "end-time": "now",
+      "region": "us-east-1"
+    },
+    {
+      "name": "get-query-results",
+      "operation-type": "cloudwatch-logs-get-results",
+      "query-id": "abc123-query-id-here",
+      "region": "us-east-1",
+      "poll-interval": 2,
+      "query-timeout": 300
+    }
+  ],
+  "test_procedures": [
+    {
+      "name": "recent-logs",
+      "description": "Query recent logs from CloudWatch",
+      "default": true,
+      "schedule": [
+        {
+          "operation": "query-recent-logs",
+          "clients": 1,
+          "iterations": 10,
+          "warmup-iterations": 2
+        }
+      ]
+    },
+    {
+      "name": "error-analysis",
+      "description": "Analyze error logs over the last 24 hours",
+      "schedule": [
+        {
+          "operation": "query-error-logs",
+          "clients": 1,
+          "iterations": 5
+        }
+      ]
+    },
+    {
+      "name": "multi-group-query",
+      "description": "Query across multiple log groups",
+      "schedule": [
+        {
+          "operation": "query-multiple-log-groups",
+          "clients": 2,
+          "iterations": 20
+        }
+      ]
+    }
+  ]
+}

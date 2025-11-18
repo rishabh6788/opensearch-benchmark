@@ -621,6 +621,9 @@ class OperationType(Enum):
     TrainKnnModel = (19, AdminStatus.No, ServerlessStatus.Public)
     DeleteKnnModel = (20, AdminStatus.No, ServerlessStatus.Public)
     ProduceStreamMessage = (21, AdminStatus.No, ServerlessStatus.Blocked)
+    CloudWatchLogsQuery = (56, AdminStatus.No, ServerlessStatus.Blocked)
+    CloudWatchLogsStartQuery = (57, AdminStatus.No, ServerlessStatus.Blocked)
+    CloudWatchLogsGetResults = (58, AdminStatus.No, ServerlessStatus.Blocked)
 
     # administrative actions
     ForceMerge = (22, AdminStatus.Yes, ServerlessStatus.Blocked)
@@ -789,6 +792,12 @@ class OperationType(Enum):
             return OperationType.UpdateConcurrentSegmentSearchSettings
         elif v == "produce-stream-message":
             return OperationType.ProduceStreamMessage
+        elif v == "cloudwatch-logs-query" or v == "cloud-watch-logs-query":
+            return OperationType.CloudWatchLogsQuery
+        elif v == "cloudwatch-logs-start-query" or v == "cloud-watch-logs-start-query":
+            return OperationType.CloudWatchLogsStartQuery
+        elif v == "cloudwatch-logs-get-results" or v == "cloud-watch-logs-get-results":
+            return OperationType.CloudWatchLogsGetResults
         else:
             raise KeyError(f"No enum value for [{v}]")
 

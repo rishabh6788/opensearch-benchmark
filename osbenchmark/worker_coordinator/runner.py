@@ -49,6 +49,9 @@ from osbenchmark.utils import convert
 from osbenchmark.client import RequestContextHolder
 # Mapping from operation type to specific runner
 from osbenchmark.utils.parse import parse_int_parameter, parse_string_parameter, parse_float_parameter
+from osbenchmark.worker_coordinator.cloudwatch_runner import (
+    CloudWatchLogsQuery, CloudWatchLogsStartQuery, CloudWatchLogsGetResults
+)
 
 __RUNNERS = {}
 
@@ -72,6 +75,9 @@ def register_default_runners():
     register_runner(workload.OperationType.DeletePointInTime, DeletePointInTime(), async_runner=True)
     register_runner(workload.OperationType.ListAllPointInTime, ListAllPointInTime(), async_runner=True)
     register_runner(workload.OperationType.ProduceStreamMessage, ProduceStreamMessage(), async_runner=True)
+    register_runner(workload.OperationType.CloudWatchLogsQuery, CloudWatchLogsQuery(), async_runner=True)
+    register_runner(workload.OperationType.CloudWatchLogsStartQuery, CloudWatchLogsStartQuery(), async_runner=True)
+    register_runner(workload.OperationType.CloudWatchLogsGetResults, CloudWatchLogsGetResults(), async_runner=True)
 
     # This is an administrative operation but there is no need for a retry here as we don't issue a request
     register_runner(workload.OperationType.Sleep, Sleep(), async_runner=True)
@@ -116,6 +122,10 @@ def register_default_runners():
     register_runner(workload.OperationType.RegisterRemoteMlModel, Retry(RegisterRemoteMlModel()), async_runner=True)
 
 def runner_for(operation_type):
+    # Convert enum to hyphenated string for lookup (same as register_runner does)
+    if isinstance(operation_type, workload.OperationType):
+        operation_type = operation_type.to_hyphenated_string()
+
     try:
         return __RUNNERS[operation_type]
     except KeyError:
@@ -140,6 +150,13 @@ def register_runner(operation_type, runner, **kwargs):
     if not async_runner:
         raise exceptions.BenchmarkAssertionError(
             "Runner [{}] must be implemented as async runner and registered with async_runner=True.".format(str(runner)))
+
+    # CloudWatch runners don't need cluster awareness - register directly
+    if operation_type.startswith("cloud-watch-logs"):
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Registering CloudWatch runner [%s] for [%s].", str(runner), str(operation_type))
+        __RUNNERS[operation_type] = _with_completion(_with_assertions(runner))
+        return
 
     if getattr(runner, "multi_cluster", False):
         if "__aenter__" in dir(runner) and "__aexit__" in dir(runner):
