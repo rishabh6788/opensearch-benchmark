@@ -1836,3 +1836,275 @@ class AsyncProfilerTests(TestCase):
         self.assertEqual(2, return_value)
         duration = end - start
         self.assertTrue(0.9 <= duration <= 1.2, "Should sleep for roughly 1 second but took [%.2f] seconds." % duration)
+
+
+class TimePeriodBasedTests(TestCase):
+    def test_time_period_based_without_ramp_down(self):
+        # Test basic time-period based schedule without ramp-down
+        loop_control = worker_coordinator.TimePeriodBased(
+            warmup_time_period=10,
+            time_period=100,
+            ramp_down_time_period=None,
+            client_index=0,
+            total_clients=4
+        )
+
+        # Verify duration calculation
+        self.assertEqual(110, loop_control._duration)
+        self.assertEqual(110, loop_control._base_duration)
+        self.assertEqual(10, loop_control._warmup_time_period)
+        self.assertEqual(100, loop_control._time_period)
+        self.assertFalse(loop_control.infinite)
+
+    def test_time_period_based_with_ramp_down_client_0(self):
+        # Test ramp-down for client 0 (first client, stops earliest)
+        loop_control = worker_coordinator.TimePeriodBased(
+            warmup_time_period=10,
+            time_period=100,
+            ramp_down_time_period=20,
+            client_index=0,
+            total_clients=4
+        )
+
+        # Client 0: reverse_index = 3, early_stop = 20 * (3/4) = 15
+        # duration = 110 - 15 = 95
+        self.assertEqual(110, loop_control._base_duration)
+        self.assertEqual(95, loop_control._duration)
+        self.assertEqual(20, loop_control._ramp_down_time_period)
+
+    def test_time_period_based_with_ramp_down_client_3(self):
+        # Test ramp-down for client 3 (last client, runs full duration)
+        loop_control = worker_coordinator.TimePeriodBased(
+            warmup_time_period=10,
+            time_period=100,
+            ramp_down_time_period=20,
+            client_index=3,
+            total_clients=4
+        )
+
+        # Client 3: reverse_index = 0, early_stop = 20 * (0/4) = 0
+        # duration = 110 - 0 = 110
+        self.assertEqual(110, loop_control._base_duration)
+        self.assertEqual(110, loop_control._duration)
+
+    def test_time_period_based_with_ramp_down_all_clients(self):
+        # Test that clients stop in reverse order with correct spacing
+        warmup = 10
+        time_period = 100
+        ramp_down = 20
+        total_clients = 4
+        base_duration = warmup + time_period
+
+        durations = []
+        for client_index in range(total_clients):
+            loop_control = worker_coordinator.TimePeriodBased(
+                warmup_time_period=warmup,
+                time_period=time_period,
+                ramp_down_time_period=ramp_down,
+                client_index=client_index,
+                total_clients=total_clients
+            )
+            durations.append(loop_control._duration)
+
+        # Expected: [95, 100, 105, 110] - clients stop 5s apart
+        self.assertEqual([95, 100, 105, 110], durations)
+
+        # Verify spacing is correct
+        for i in range(1, len(durations)):
+            spacing = durations[i] - durations[i-1]
+            expected_spacing = ramp_down / total_clients
+            self.assertAlmostEqual(expected_spacing, spacing, places=2)
+
+    def test_time_period_based_with_ramp_down_no_warmup(self):
+        # Test ramp-down when warmup is 0
+        loop_control = worker_coordinator.TimePeriodBased(
+            warmup_time_period=0,
+            time_period=100,
+            ramp_down_time_period=20,
+            client_index=0,
+            total_clients=4
+        )
+
+        # Base duration = 0 + 100 = 100
+        # Client 0: early_stop = 20 * (3/4) = 15
+        # duration = 100 - 15 = 85
+        self.assertEqual(100, loop_control._base_duration)
+        self.assertEqual(85, loop_control._duration)
+
+    def test_time_period_based_sample_type_without_warmup(self):
+        # Test that sample_type is always Normal when warmup is 0
+        loop_control = worker_coordinator.TimePeriodBased(
+            warmup_time_period=0,
+            time_period=100,
+            ramp_down_time_period=0,
+            client_index=0,
+            total_clients=1
+        )
+
+        loop_control.start()
+        # Even at the very beginning, should be Normal (not Warmup)
+        self.assertEqual(metrics.SampleType.Normal, loop_control.sample_type)
+
+    def test_time_period_based_sample_type_with_warmup(self):
+        # Test that sample_type transitions from Warmup to Normal
+        loop_control = worker_coordinator.TimePeriodBased(
+            warmup_time_period=10,
+            time_period=100,
+            ramp_down_time_period=0,
+            client_index=0,
+            total_clients=1
+        )
+
+        loop_control.start()
+        # Initially should be Warmup
+        self.assertEqual(metrics.SampleType.Warmup, loop_control.sample_type)
+
+        # Simulate time passing (mock _elapsed)
+        loop_control._now = loop_control._start + 5
+        self.assertEqual(metrics.SampleType.Warmup, loop_control.sample_type)
+
+        # After warmup period
+        loop_control._now = loop_control._start + 11
+        self.assertEqual(metrics.SampleType.Normal, loop_control.sample_type)
+
+    def test_time_period_based_completion(self):
+        # Test that completion works correctly with ramp-down
+        loop_control = worker_coordinator.TimePeriodBased(
+            warmup_time_period=10,
+            time_period=100,
+            ramp_down_time_period=20,
+            client_index=0,
+            total_clients=4
+        )
+
+        loop_control.start()
+        self.assertFalse(loop_control.completed)
+
+        # Client 0 should complete at 95 seconds
+        loop_control._now = loop_control._start + 94
+        self.assertFalse(loop_control.completed)
+
+        loop_control._now = loop_control._start + 95
+        self.assertTrue(loop_control.completed)
+
+    def test_time_period_based_percent_completed(self):
+        # Test progress calculation with ramp-down
+        loop_control = worker_coordinator.TimePeriodBased(
+            warmup_time_period=0,
+            time_period=100,
+            ramp_down_time_period=20,
+            client_index=0,
+            total_clients=4
+        )
+
+        loop_control.start()
+
+        # Client 0 duration is 85 seconds
+        # At 42.5 seconds, should be 50% complete
+        loop_control._now = loop_control._start + 42.5
+        self.assertAlmostEqual(0.5, loop_control.percent_completed, places=2)
+
+        # At 85 seconds, should be 100% complete
+        loop_control._now = loop_control._start + 85
+        self.assertAlmostEqual(1.0, loop_control.percent_completed, places=2)
+
+    def test_time_period_based_single_client_no_ramp_down_effect(self):
+        # Test that with a single client, ramp-down has no effect
+        loop_control = worker_coordinator.TimePeriodBased(
+            warmup_time_period=10,
+            time_period=100,
+            ramp_down_time_period=20,
+            client_index=0,
+            total_clients=1
+        )
+
+        # With 1 client: reverse_index = 0, early_stop = 20 * (0/1) = 0
+        # duration = 110 - 0 = 110 (no change)
+        self.assertEqual(110, loop_control._duration)
+
+
+class TaskRampDownTests(TestCase):
+    def test_task_with_ramp_down_time_period(self):
+        # Test that Task accepts ramp_down_time_period parameter
+        op = workload.Operation("test-op", workload.OperationType.Bulk.to_hyphenated_string(), {})
+        task = workload.Task(
+            name="test-task",
+            operation=op,
+            warmup_time_period=10,
+            time_period=100,
+            ramp_up_time_period=20,
+            ramp_down_time_period=30,
+            clients=4
+        )
+
+        self.assertEqual(10, task.warmup_time_period)
+        self.assertEqual(100, task.time_period)
+        self.assertEqual(20, task.ramp_up_time_period)
+        self.assertEqual(30, task.ramp_down_time_period)
+        self.assertEqual(4, task.clients)
+
+    def test_task_without_ramp_down_defaults_to_none(self):
+        # Test that ramp_down_time_period defaults to None
+        op = workload.Operation("test-op", workload.OperationType.Bulk.to_hyphenated_string(), {})
+        task = workload.Task(
+            name="test-task",
+            operation=op,
+            time_period=100,
+            clients=4
+        )
+
+        self.assertIsNone(task.ramp_down_time_period)
+
+    def test_task_equality_with_ramp_down(self):
+        # Test that tasks with different ramp_down_time_period are not equal
+        op = workload.Operation("test-op", workload.OperationType.Bulk.to_hyphenated_string(), {})
+
+        task1 = workload.Task(
+            name="test-task",
+            operation=op,
+            time_period=100,
+            ramp_down_time_period=20,
+            clients=4
+        )
+
+        task2 = workload.Task(
+            name="test-task",
+            operation=op,
+            time_period=100,
+            ramp_down_time_period=30,
+            clients=4
+        )
+
+        task3 = workload.Task(
+            name="test-task",
+            operation=op,
+            time_period=100,
+            ramp_down_time_period=20,
+            clients=4
+        )
+
+        self.assertNotEqual(task1, task2)
+        self.assertEqual(task1, task3)
+
+    def test_task_hash_includes_ramp_down(self):
+        # Test that hash includes ramp_down_time_period
+        op = workload.Operation("test-op", workload.OperationType.Bulk.to_hyphenated_string(), {})
+
+        task1 = workload.Task(
+            name="test-task",
+            operation=op,
+            time_period=100,
+            ramp_down_time_period=20,
+            clients=4
+        )
+
+        task2 = workload.Task(
+            name="test-task",
+            operation=op,
+            time_period=100,
+            ramp_down_time_period=30,
+            clients=4
+        )
+
+        # Different ramp_down should produce different hashes
+        self.assertNotEqual(hash(task1), hash(task2))
