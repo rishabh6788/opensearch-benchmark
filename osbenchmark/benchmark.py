@@ -531,6 +531,10 @@ def create_arg_parser():
         # presence / absence of other command line options
         default="")
     test_run_parser.add_argument(
+        "--engine-type",
+        help="Define the target engine type (default: opensearch).",
+        default="opensearch")
+    test_run_parser.add_argument(
         "--revision",
         help="Define the source code revision for building the benchmark candidate. 'current' uses the source tree as is,"
              " 'latest' fetches the latest version on main. It is also possible to specify a commit id or a timestamp."
@@ -1113,6 +1117,7 @@ def configure_test(arg_parser, args, cfg):
     # use the test-run id implicitly also as the install id.
     cfg.add(config.Scope.applicationOverride, "system", "install.id", args.test_run_id)
     cfg.add(config.Scope.applicationOverride, "test_run", "pipeline", args.pipeline)
+    cfg.add(config.Scope.applicationOverride, "engine", "type", args.engine_type)
     cfg.add(config.Scope.applicationOverride, "test_run", "user.tag", args.user_tag)
     cfg.add(config.Scope.applicationOverride, "worker_coordinator", "profiling", args.enable_worker_coordinator_profiling)
     cfg.add(config.Scope.applicationOverride, "worker_coordinator", "assertions", args.enable_assertions)

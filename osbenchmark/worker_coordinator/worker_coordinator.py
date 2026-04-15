@@ -48,6 +48,7 @@ import thespian.actors
 from osbenchmark.utils import opts
 from osbenchmark import actor, config, exceptions, metrics, workload, client, paths, PROGRAM_NAME, telemetry
 from osbenchmark.worker_coordinator import runner, scheduler
+from osbenchmark.engine import get_engine
 from osbenchmark.workload import WorkloadProcessorRegistry, load_workload, load_workload_plugins, ingestion_manager
 from osbenchmark.utils import convert, console, net
 from osbenchmark.worker_coordinator.errors import parse_error
@@ -748,7 +749,9 @@ def load_local_config(coordinator_config):
         "workload", "worker_coordinator", "client",
         # due to distribution version...
         "builder",
-        "telemetry"
+        "telemetry",
+        # engine type for multi-engine support
+        "engine"
     ])
     # set root path (normally done by the main entry point)
     cfg.add(config.Scope.application, "node", "benchmark.root", paths.benchmark_root())
@@ -963,7 +966,13 @@ class WorkerCoordinator:
             cluster_client_options = dict(all_client_options[cluster_name])
             # Use retries to avoid aborts on long living connections for telemetry devices
             cluster_client_options["retry-on-timeout"] = True
-            opensearch[cluster_name] = self.os_client_factory(cluster_hosts, cluster_client_options).create()
+            # Use the injected factory class if provided (e.g. in tests), otherwise use engine registry
+            if self.os_client_factory != client.OsClientFactory:
+                opensearch[cluster_name] = self.os_client_factory(cluster_hosts, cluster_client_options).create()
+            else:
+                engine_type = self.config.opts("engine", "type", mandatory=False, default_value="opensearch")
+                engine = get_engine(engine_type)
+                opensearch[cluster_name] = engine.create_client_factory(cluster_hosts, cluster_client_options).create()
         return opensearch
 
     def prepare_telemetry(self, opensearch, enable):
@@ -994,13 +1003,15 @@ class WorkerCoordinator:
         self.telemetry = telemetry.Telemetry(enabled_devices, devices=devices)
 
     def wait_for_rest_api(self, opensearch):
+        engine_type = self.config.opts("engine", "type", mandatory=False, default_value="opensearch")
+        engine = get_engine(engine_type)
         os_default = opensearch["default"]
-        self.logger.info("Checking if REST API is available.")
-        if client.wait_for_rest_layer(os_default, max_attempts=40):
-            self.logger.info("REST API is available.")
+        self.logger.info("Checking if [%s] REST API is available.", engine_type)
+        if engine.wait_for_client(os_default, max_attempts=40):
+            self.logger.info("[%s] REST API is available.", engine_type)
         else:
-            self.logger.error("REST API layer is not yet available. Stopping benchmark.")
-            raise exceptions.SystemSetupError("OpenSearch REST API layer is not available.")
+            self.logger.error("[%s] REST API layer is not yet available. Stopping benchmark.", engine_type)
+            raise exceptions.SystemSetupError(f"{engine_type} REST API layer is not available.")
 
     def retrieve_cluster_info(self, opensearch):
         try:
@@ -1675,7 +1686,9 @@ class Worker(actor.BenchmarkActor):
         # we need to wake up more often in test mode
         if self.config.opts("workload", "test.mode.enabled"):
             self.wakeup_interval = 0.5
-        runner.register_default_runners()
+        engine_type = self.config.opts("engine", "type", mandatory=False, default_value="opensearch")
+        engine = get_engine(engine_type)
+        engine.register_runners(runner.register_runner)
         if self.workload.has_plugins:
             workload.load_workload_plugins(self.config, self.workload.name, runner.register_runner, scheduler.register_scheduler)
         self.drive()
@@ -2153,21 +2166,21 @@ class AsyncIoAdapter:
     async def run(self):
         def os_clients(all_hosts, all_client_options):
             opensearch = {}
-            grpc_hosts = self.cfg.opts("client", "grpc_hosts", mandatory=False)
+            engine_type = self.cfg.opts("engine", "type", mandatory=False, default_value="opensearch")
+            engine = get_engine(engine_type)
 
-            # If gRPC hosts are configured and not empty, use them. Otherwise, use defaults for gRPC operations.
-            if grpc_hosts and grpc_hosts.all_hosts:
-                # Use the provided gRPC hosts
-                pass
+            if engine_type == "opensearch":
+                grpc_hosts = self.cfg.opts("client", "grpc_hosts", mandatory=False)
+                if not grpc_hosts or not grpc_hosts.all_hosts:
+                    grpc_hosts = opts.TargetHosts("localhost:9400")
+                for cluster_name, cluster_hosts in all_hosts.items():
+                    rest_client_factory = client.OsClientFactory(cluster_hosts, all_client_options[cluster_name])
+                    unified_client_factory = client.UnifiedClientFactory(rest_client_factory, grpc_hosts)
+                    opensearch[cluster_name] = unified_client_factory.create_async()
             else:
-                # Provide default gRPC hosts when using gRPC operations
-                # Default: localhost:9400 (matching current environment variable defaults)
-                grpc_hosts = opts.TargetHosts("localhost:9400")
-
-            for cluster_name, cluster_hosts in all_hosts.items():
-                rest_client_factory = client.OsClientFactory(cluster_hosts, all_client_options[cluster_name])
-                unified_client_factory = client.UnifiedClientFactory(rest_client_factory, grpc_hosts)
-                opensearch[cluster_name] = unified_client_factory.create_async()
+                for cluster_name, cluster_hosts in all_hosts.items():
+                    factory = engine.create_client_factory(cluster_hosts, all_client_options[cluster_name])
+                    opensearch[cluster_name] = factory.create_async()
             return opensearch
 
         # Properly size the internal connection pool to match the number of expected clients but allow the user
@@ -2211,7 +2224,12 @@ class AsyncIoAdapter:
             shutdown_asyncgens_end = time.perf_counter()
             self.logger.info("Total time to shutdown asyncgens: %f seconds.", (shutdown_asyncgens_end - run_end))
             for s in opensearch.values():
-                await s.transport.close()
+                if hasattr(s, 'transport'):
+                    await s.transport.close()
+                elif hasattr(s, 'close'):
+                    close_result = s.close()
+                    if asyncio.iscoroutine(close_result):
+                        await close_result
             transport_close_end = time.perf_counter()
             self.logger.info("Total time to close transports: %f seconds.", (shutdown_asyncgens_end - transport_close_end))
 
@@ -2342,7 +2360,8 @@ class AsyncExecutor:
                 total_ops, total_ops_unit, request_meta_data = await asyncio.wait_for(
                     execute_single(
                         self.runner, self.opensearch, params, self.on_error,
-                        redline_enabled=self.redline_enabled, client_enabled=client_state
+                        redline_enabled=self.redline_enabled, client_enabled=client_state,
+                        engine_type=self.cfg.opts("engine", "type", mandatory=False, default_value="opensearch") if self.cfg else "opensearch"
                     ),
                     timeout=self.base_timeout if request_timeout is None else request_timeout
                 )
@@ -2534,14 +2553,12 @@ class AsyncExecutor:
 request_context_holder = client.RequestContextHolder()
 
 
-async def execute_single(runner, opensearch, params, on_error, redline_enabled=False, client_enabled=True):
+async def execute_single(runner, opensearch, params, on_error, redline_enabled=False, client_enabled=True, engine_type="opensearch"):
     """
     Invokes the given runner once and provides the runner's return value in a uniform structure.
 
     :return: a triple of: total number of operations, unit of operations, a dict of request meta data (may be None).
     """
-    # pylint: disable=import-outside-toplevel
-    import opensearchpy
     fatal_error = False
     if client_enabled:
         try:
@@ -2560,40 +2577,33 @@ async def execute_single(runner, opensearch, params, on_error, redline_enabled=F
                 total_ops = 1
                 total_ops_unit = "ops"
                 request_meta_data = {"success": True}
-        except opensearchpy.TransportError as e:
-            request_context_holder.on_client_request_end()
-            # we *specifically* want to distinguish connection refused (a node died?) from connection timeouts
-            # pylint: disable=unidiomatic-typecheck
-            if type(e) is opensearchpy.ConnectionError:
-                fatal_error = True
-
-            total_ops = 0
-            total_ops_unit = "ops"
-            request_meta_data = {
-                "success": False,
-                "error-type": "transport"
-            }
-            # The OS client will sometimes return string like "N/A" or "TIMEOUT" for connection errors.
-            if isinstance(e.status_code, int):
-                request_meta_data["http-status"] = e.status_code
-            # connection timeout errors don't provide a helpful description
-            if isinstance(e, opensearchpy.ConnectionTimeout):
-                request_meta_data["error-description"] = "network connection timed out"
-            elif e.info:
-                request_meta_data["error-description"] = f"{e.error} ({e.info})"
-            else:
-                if isinstance(e.error, bytes):
-                    error_description = e.error.decode("utf-8")
-                else:
-                    error_description = str(e.error)
-                request_meta_data["error-description"] = error_description
         except KeyError as e:
-            request_context_holder.on_client_request_end()
+            try:
+                request_context_holder.on_client_request_end()
+            except LookupError:
+                pass
             logging.getLogger(__name__).exception("Cannot execute runner [%s]; most likely due to missing parameters.", str(runner))
             msg = "Cannot execute [%s]. Provided parameters are: %s. Error: [%s]." % (str(runner), list(params.keys()), str(e))
             if not redline_enabled:
                 console.error(msg)
                 raise exceptions.SystemSetupError(msg)
+        except Exception as e:
+            try:
+                request_context_holder.on_client_request_end()
+            except LookupError:
+                pass
+            # Try engine-specific error handling
+            try:
+                engine = get_engine(engine_type)
+                result = engine.on_execute_error(e)
+            except Exception:
+                result = None
+
+            if result is not None:
+                total_ops, total_ops_unit, request_meta_data, fatal_error = result
+            else:
+                # Not handled by engine — re-raise for the caller to handle
+                raise
 
         if not request_meta_data["success"]:
             if on_error == "abort" or fatal_error:
