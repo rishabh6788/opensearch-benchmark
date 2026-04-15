@@ -17,6 +17,9 @@ Add an engine abstraction layer to OpenSearch Benchmark so it can benchmark data
   6. `1ff5bc94` — Fail fast on import if pyvespa not installed
   7. `3e3509f4` — Use feed_iterable instead of manual async tasks
   8. `9694af32` — Use feed_async_iterable via asyncio.to_thread
+  9. `47391306` — Update session notes
+  10. `a413fc63` — Fix bytes body handling in _extract_docs
+  11. `129a5b49` — Use UUID for document IDs instead of loop index
 
 ## Engine Interface Contract
 
@@ -68,8 +71,10 @@ Wraps existing infrastructure:
 
 **`runners.py`** — VespaBulkFeed runner:
 - Extracts doc lines from standard bulk body (strips OpenSearch action-metadata)
+- Handles `bytes` body (produced by `b"".join(bulk)` in param source)
 - Uses `feed_async_iterable()` via `asyncio.to_thread()` for non-blocking async feeding
 - HTTP/2 multiplexing, configurable concurrency (`vespa-max-workers`, `vespa-max-connections`, `vespa-max-queue-size`)
+- Document ID resolution: `_id` field → `id` field → `uuid.uuid4()` (globally unique across all workers)
 - Returns same metadata format as BulkIndex: weight, unit, success-count, error-count
 
 ### 4. CLI Argument (`osbenchmark/benchmark.py`)
@@ -118,6 +123,25 @@ The existing `BulkIndexParamSource` always injects OpenSearch action-metadata li
 ### Runner registered as "bulk"
 Vespa registers its runner as `"bulk"` (same operation name as OpenSearch's BulkIndex) so existing workloads work without modification.
 
+### Document ID generation
+- Prefers `_id` (OpenSearch convention, popped from fields) or `id` from the document
+- Falls back to `uuid.uuid4()` — globally unique across all workers/clients with no coordination
+- UUID4 uses 128 bits of randomness from OS `/dev/urandom`, independent per process
+
+## Bugs Found and Fixed
+
+### Bug 1: bytes body not handled (Critical)
+`BulkIndexParamSource` produces body as `bytes` via `b"".join(bulk)`. Original `_extract_docs` only checked `str` and `list`, causing the entire bytes blob to become one list element. With `action-metadata-present=True`, `range(1, 1, 2)` yielded nothing — zero docs extracted, silent false success.
+**Fix**: Added `isinstance(body, bytes)` check, splitting on `b"\n"`.
+
+### Bug 2: Loop index as fallback doc ID (Critical)
+Using `str(i)` (loop index within a bulk) as fallback ID meant the same IDs (0, 1, 2...) were reused across every bulk, causing document overwrites.
+**Fix**: Changed fallback to `uuid.uuid4()`.
+
+### Bug 3: ImportError guard not triggering (Minor)
+The `try/except ImportError` in `engine/__init__.py` for Vespa registration wouldn't trigger because `vespa/__init__.py` had no top-level pyvespa import — the import only happened at runtime in `VespaClientFactory.__init__`.
+**Fix**: Added `import vespa.application` at top of `vespa/__init__.py`.
+
 ## Performance Considerations (Vespa vs OpenSearch)
 
 | Aspect | OpenSearch | Vespa |
@@ -152,6 +176,11 @@ For Vespa with same config: same partitioning, but each bulk of 5000 docs = 5000
 - Document API: `/document/v1/soposts/post/docid/{id}`
 - Test document successfully fed and retrieved
 
+### Vespa schema vs OpenSearch index
+- OpenSearch: Create index at runtime via `PUT /my-index` with mappings
+- Vespa: Define schema in application package, deploy via config server API (static, not runtime)
+- Schema must be deployed before benchmarking starts
+
 ### Schema definition (deployed via config server API)
 ```
 schema post {
@@ -170,14 +199,14 @@ schema post {
 }
 ```
 
-## Vespa Python Client (pyvespa) API Summary
+## Vespa Python Client (pyvespa 1.1.2) API Summary
 
 | Operation | Method | Notes |
 |---|---|---|
 | Connect | `Vespa(url="http://host:8080")` | |
 | Feed single doc | `app.feed_data_point(schema, data_id, fields)` | Sync, within `syncio()` context |
 | Feed batch (threaded) | `app.feed_iterable(iter, schema, callback, ...)` | Thread pool, sync HTTP |
-| Feed batch (async) | `app.feed_async_iterable(iter, schema, callback, ...)` | asyncio + HTTP/2 |
+| Feed batch (async) | `app.feed_async_iterable(iter, schema, callback, ...)` | asyncio + HTTP/2, own event loop |
 | Query | `app.query(body={"yql": "..."})` | YQL query language |
 | Get doc | `app.get_data(schema, data_id)` | |
 | Update doc | `app.update_data(schema, data_id, fields)` | Partial updates supported |
