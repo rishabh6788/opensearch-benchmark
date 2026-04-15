@@ -18,7 +18,10 @@ logger = logging.getLogger(__name__)
 
 class VespaBulkFeed:
     """
-    Feeds documents to Vespa using pyvespa's feed_iterable.
+    Feeds documents to Vespa using pyvespa's feed_async_iterable.
+
+    Uses asyncio + HTTP/2 for non-blocking parallel feeding, which
+    cooperates properly with OSB's asyncio event loop.
 
     Expects the same param dict as OpenSearch's BulkIndex runner:
     - body: list of lines (alternating action-metadata + doc JSON when action-metadata-present is True)
@@ -29,8 +32,8 @@ class VespaBulkFeed:
 
     Additional Vespa-specific optional params:
     - vespa-namespace: Vespa namespace (defaults to schema name)
-    - vespa-max-connections: httpx connections (default 16)
-    - vespa-max-workers: concurrent feed threads (default 16)
+    - vespa-max-connections: HTTP/2 connections (default 1, HTTP/2 multiplexes)
+    - vespa-max-workers: concurrent async feed tasks (default 64)
     - vespa-max-queue-size: max queue size (default 4000)
     """
 
@@ -41,13 +44,15 @@ class VespaBulkFeed:
         return False
 
     async def __call__(self, vespa_app, params):
+        import asyncio
+
         schema = params.get("index", "doc")
         namespace = params.get("vespa-namespace", schema)
         bulk_size = params["bulk-size"]
         unit = params.get("unit", "docs")
         with_action_metadata = params.get("action-metadata-present", True)
-        max_connections = params.get("vespa-max-connections", 16)
-        max_workers = params.get("vespa-max-workers", 16)
+        max_connections = params.get("vespa-max-connections", 1)
+        max_workers = params.get("vespa-max-workers", 64)
         max_queue_size = params.get("vespa-max-queue-size", 4000)
 
         body = params["body"]
@@ -72,7 +77,11 @@ class VespaBulkFeed:
                 doc_id = doc.pop("_id", None) or doc.get("id", str(i))
                 yield {"id": str(doc_id), "fields": doc}
 
-        vespa_app.feed_iterable(
+        # feed_async_iterable is synchronous at the call site but internally
+        # runs its own asyncio event loop. Run it in a thread to avoid
+        # blocking OSB's event loop.
+        await asyncio.to_thread(
+            vespa_app.feed_async_iterable,
             iter=doc_iterable(),
             schema=schema,
             namespace=namespace,
@@ -109,7 +118,6 @@ class VespaBulkFeed:
             lines = [body]
 
         if with_action_metadata:
-            # Every other line is a document (odd-indexed lines: 1, 3, 5, ...)
             return [lines[i] for i in range(1, len(lines), 2) if lines[i]]
         return [line for line in lines if line]
 
