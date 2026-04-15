@@ -25,8 +25,8 @@ def create_client_factory(hosts, client_options):
     return client.OsClientFactory(hosts, client_options)
 
 
-def create_async_client_factory(hosts, client_options, cfg=None):
-    """Create an OpenSearch async client factory (REST + optional gRPC)."""
+def create_async_client(hosts, client_options, cfg=None):
+    """Create an async OpenSearch client (REST + optional gRPC)."""
     from osbenchmark.utils import opts
     rest_client_factory = client.OsClientFactory(hosts, client_options)
     grpc_hosts = None
@@ -34,7 +34,7 @@ def create_async_client_factory(hosts, client_options, cfg=None):
         grpc_hosts = cfg.opts("client", "grpc_hosts", mandatory=False)
     if not grpc_hosts or not grpc_hosts.all_hosts:
         grpc_hosts = opts.TargetHosts("localhost:9400")
-    return client.UnifiedClientFactory(rest_client_factory, grpc_hosts)
+    return client.UnifiedClientFactory(rest_client_factory, grpc_hosts).create_async()
 
 
 def register_runners(register_runner_fn):

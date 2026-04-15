@@ -40,6 +40,12 @@ def _ensure_builtin_engines():
     if "opensearch" not in _ENGINE_REGISTRY:
         from osbenchmark.engine import opensearch as opensearch_engine
         register_engine("opensearch", opensearch_engine)
+    if "vespa" not in _ENGINE_REGISTRY:
+        try:
+            from osbenchmark.engine import vespa as vespa_engine
+            register_engine("vespa", vespa_engine)
+        except ImportError:
+            logger.debug("Vespa engine not available (pyvespa not installed).")
 
 
 def get_engine(name):

@@ -2168,19 +2168,9 @@ class AsyncIoAdapter:
             opensearch = {}
             engine_type = self.cfg.opts("engine", "type", mandatory=False, default_value="opensearch")
             engine = get_engine(engine_type)
-
-            if engine_type == "opensearch":
-                grpc_hosts = self.cfg.opts("client", "grpc_hosts", mandatory=False)
-                if not grpc_hosts or not grpc_hosts.all_hosts:
-                    grpc_hosts = opts.TargetHosts("localhost:9400")
-                for cluster_name, cluster_hosts in all_hosts.items():
-                    rest_client_factory = client.OsClientFactory(cluster_hosts, all_client_options[cluster_name])
-                    unified_client_factory = client.UnifiedClientFactory(rest_client_factory, grpc_hosts)
-                    opensearch[cluster_name] = unified_client_factory.create_async()
-            else:
-                for cluster_name, cluster_hosts in all_hosts.items():
-                    factory = engine.create_client_factory(cluster_hosts, all_client_options[cluster_name])
-                    opensearch[cluster_name] = factory.create_async()
+            for cluster_name, cluster_hosts in all_hosts.items():
+                opensearch[cluster_name] = engine.create_async_client(
+                    cluster_hosts, all_client_options[cluster_name], cfg=self.cfg)
             return opensearch
 
         # Properly size the internal connection pool to match the number of expected clients but allow the user
