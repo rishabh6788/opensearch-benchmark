@@ -110,7 +110,9 @@ class VespaBulkFeed:
     @staticmethod
     def _extract_docs(body, with_action_metadata):
         """Extract document lines from the bulk body."""
-        if isinstance(body, str):
+        if isinstance(body, bytes):
+            lines = body.split(b"\n")
+        elif isinstance(body, str):
             lines = body.split("\n")
         elif isinstance(body, list):
             lines = body
