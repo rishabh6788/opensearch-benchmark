@@ -17,6 +17,8 @@ async parallelism provided by httpx/HTTP2.
 import logging
 import time
 
+import vespa.application  # noqa: F401 — fail fast if pyvespa not installed
+
 from osbenchmark.engine.vespa.runners import VespaBulkFeed
 
 logger = logging.getLogger(__name__)
