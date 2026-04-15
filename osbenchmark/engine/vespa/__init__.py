@@ -17,7 +17,7 @@ async parallelism provided by httpx/HTTP2.
 import logging
 import time
 
-import vespa.application  # noqa: F401 — fail fast if pyvespa not installed
+import vespa.application
 
 from osbenchmark.engine.vespa.runners import VespaBulkFeed
 
@@ -82,7 +82,7 @@ def create_async_client(hosts, client_options, cfg=None):
 
 def register_runners(register_runner_fn):
     """Register Vespa-specific runners for ingestion."""
-    register_runner_fn("bulk", VespaBulkFeed())
+    register_runner_fn("bulk", VespaBulkFeed(), async_runner=True)
 
 
 # ---------------------------------------------------------------------------
