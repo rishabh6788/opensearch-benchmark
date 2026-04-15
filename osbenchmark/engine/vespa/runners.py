@@ -10,13 +10,15 @@
 Vespa-specific runners for opensearch-benchmark.
 """
 
-import asyncio
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class VespaBulkFeed:
     """
-    Feeds documents to Vespa one-by-one via the async Document v1 API.
+    Feeds documents to Vespa using pyvespa's feed_iterable.
 
     Expects the same param dict as OpenSearch's BulkIndex runner:
     - body: list of lines (alternating action-metadata + doc JSON when action-metadata-present is True)
@@ -27,8 +29,9 @@ class VespaBulkFeed:
 
     Additional Vespa-specific optional params:
     - vespa-namespace: Vespa namespace (defaults to schema name)
-    - vespa-max-connections: httpx connections for this bulk (default 1)
-    - vespa-max-workers: concurrent async feed tasks (default 64)
+    - vespa-max-connections: httpx connections (default 16)
+    - vespa-max-workers: concurrent feed threads (default 16)
+    - vespa-max-queue-size: max queue size (default 4000)
     """
 
     async def __aenter__(self):
@@ -43,8 +46,9 @@ class VespaBulkFeed:
         bulk_size = params["bulk-size"]
         unit = params.get("unit", "docs")
         with_action_metadata = params.get("action-metadata-present", True)
-        max_connections = params.get("vespa-max-connections", 1)
-        max_workers = params.get("vespa-max-workers", 64)
+        max_connections = params.get("vespa-max-connections", 16)
+        max_workers = params.get("vespa-max-workers", 16)
+        max_queue_size = params.get("vespa-max-queue-size", 4000)
 
         body = params["body"]
         docs = self._extract_docs(body, with_action_metadata)
@@ -53,31 +57,30 @@ class VespaBulkFeed:
         error_count = 0
         error_details = set()
 
-        semaphore = asyncio.Semaphore(max_workers)
-
-        async def _feed_one(app, doc_id, fields):
+        def callback(response, doc_id):
             nonlocal success_count, error_count
-            async with semaphore:
-                resp = await app.feed_data_point(
-                    schema=schema,
-                    namespace=namespace,
-                    data_id=doc_id,
-                    fields=fields,
-                )
-                if resp.is_successful():
-                    success_count += 1
-                else:
-                    error_count += 1
-                    error_details.add((resp.status_code, str(resp.get_json())))
+            if response.is_successful():
+                success_count += 1
+            else:
+                error_count += 1
+                error_details.add((response.status_code, str(response.get_json())))
 
-        async with vespa_app.asyncio(connections=max_connections) as async_app:
-            tasks = []
+        def doc_iterable():
             for i, doc in enumerate(docs):
                 if isinstance(doc, (str, bytes)):
                     doc = json.loads(doc)
                 doc_id = doc.pop("_id", None) or doc.get("id", str(i))
-                tasks.append(asyncio.create_task(_feed_one(async_app, str(doc_id), doc)))
-            await asyncio.gather(*tasks)
+                yield {"id": str(doc_id), "fields": doc}
+
+        vespa_app.feed_iterable(
+            iter=doc_iterable(),
+            schema=schema,
+            namespace=namespace,
+            callback=callback,
+            max_queue_size=max_queue_size,
+            max_workers=max_workers,
+            max_connections=max_connections,
+        )
 
         meta_data = {
             "index": schema,
