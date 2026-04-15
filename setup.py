@@ -131,7 +131,10 @@ install_requires = [
     "pydantic_core>=2.27.2",
     # License: Apache 2.0
     # gRPC & proto deps
-    "opensearch-protobufs==1.2.0"
+    "opensearch-protobufs==1.2.0",
+    # License: Apache 2.0
+    # Vespa engine support (TODO: move to extras_require before release)
+    "pyvespa==1.1.2"
 ]
 
 tests_require = [
