@@ -199,7 +199,11 @@ setup(name="opensearch-benchmark",
       test_suite="tests",
       tests_require=tests_require,
       extras_require={
-          "develop": tests_require + develop_require
+          "develop": tests_require + develop_require,
+          "vespa": [
+              # License: Apache 2.0
+              "pyvespa==1.1.2"
+          ]
       },
       entry_points={
           "console_scripts": [
