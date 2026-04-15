@@ -12,6 +12,7 @@ Vespa-specific runners for opensearch-benchmark.
 
 import json
 import logging
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +72,10 @@ class VespaBulkFeed:
                 error_details.add((response.status_code, str(response.get_json())))
 
         def doc_iterable():
-            for i, doc in enumerate(docs):
+            for doc in docs:
                 if isinstance(doc, (str, bytes)):
                     doc = json.loads(doc)
-                doc_id = doc.pop("_id", None) or doc.get("id", str(i))
+                doc_id = doc.pop("_id", None) or doc.get("id") or str(uuid.uuid4())
                 yield {"id": str(doc_id), "fields": doc}
 
         # feed_async_iterable is synchronous at the call site but internally
