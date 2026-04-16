@@ -20,6 +20,7 @@ Add an engine abstraction layer to OpenSearch Benchmark so it can benchmark data
   9. `47391306` — Update session notes
   10. `a413fc63` — Fix bytes body handling in _extract_docs
   11. `129a5b49` — Use UUID for document IDs instead of loop index
+  12. `1f9e816d` — Add async_runner=True to runner registration
 
 ## Engine Interface Contract
 
@@ -141,6 +142,10 @@ Using `str(i)` (loop index within a bulk) as fallback ID meant the same IDs (0, 
 ### Bug 3: ImportError guard not triggering (Minor)
 The `try/except ImportError` in `engine/__init__.py` for Vespa registration wouldn't trigger because `vespa/__init__.py` had no top-level pyvespa import — the import only happened at runtime in `VespaClientFactory.__init__`.
 **Fix**: Added `import vespa.application` at top of `vespa/__init__.py`.
+
+### Bug 4: Missing async_runner=True in runner registration (Critical)
+`register_runner` defaults `async_runner` to `False` and raises `BenchmarkAssertionError` if not set. The Vespa runner registration omitted this flag, causing a hard crash at worker startup before any documents were fed.
+**Fix**: Added `async_runner=True` to `register_runner_fn("bulk", VespaBulkFeed(), async_runner=True)`.
 
 ## Performance Considerations (Vespa vs OpenSearch)
 
